@@ -1,0 +1,14 @@
+.{
+    .name = "microzig-rp2",
+    .version = "0.13.0",
+    .dependencies = .{
+        .@"microzig-internal" = .{
+            .path = "../../build-internals",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
