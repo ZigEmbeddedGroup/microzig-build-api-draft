@@ -6,12 +6,13 @@ pub fn build(b: *std.Build) void {
         .rp2 = true,
     });
 
-    const microzig = MicroZig.init(microzig_dep);
+    const microzig = MicroZig.init(b, microzig_dep);
 
     b.installArtifact(microzig.get_tool_exe(.picotool));
     b.installArtifact(microzig.get_tool_exe(.uf2));
 
     const exe1 = microzig.add_embedded_executable(.{
+        .name = "pico-demo1",
         .target = MicroZig.port.rp2.boards.raspberrypi.pico,
         .optimize = .ReleaseFast,
         .root_source_file = b.path("src/example.zig"),
@@ -20,7 +21,8 @@ pub fn build(b: *std.Build) void {
     microzig.install_artifact(exe1);
 
     const exe2 = microzig.add_embedded_executable(.{
-        .target = .{ .name = "rp2.board.raspberrypi-pico" },
+        .name = "pico-demo2",
+        .target = &.{ .name = "rp2.board.raspberrypi-pico" },
         .optimize = .ReleaseSafe,
         .root_source_file = b.path("src/example.zig"),
     });

@@ -15,53 +15,101 @@ pub fn build(b: *std.Build) void {
             _ = rp2_port;
         }
     }
+
+    // TODO: Add shared/common modules here:
+
+    // Tools are just public executables artifacts:
+
+    {
+        const exe = b.addExecutable(.{
+            .name = "regz",
+            .target = b.graph.host,
+            .root_source_file = b.path("tools/regz.zig"),
+        });
+        b.installArtifact(exe);
+    }
+
+    {
+        const exe = b.addExecutable(.{
+            .name = "uf2",
+            .target = b.graph.host,
+            .root_source_file = b.path("tools/uf2.zig"),
+        });
+        b.installArtifact(exe);
+    }
+
+    {
+        const exe = b.addExecutable(.{
+            .name = "picotool",
+            .target = b.graph.host,
+            .root_source_file = b.path("tools/picotool.zig"),
+        });
+        b.installArtifact(exe);
+    }
 }
 
-pub fn init(dep: *std.Build.Dependency) *MicroZig {
+pub fn init(b: *std.Build, dep: *std.Build.Dependency) *MicroZig {
     const microzig = dep.builder.allocator.create(MicroZig) catch @panic("out of memory");
     microzig.* = .{
+        .creating_builder = b,
         .dep = dep,
     };
     return microzig;
 }
 
 pub const MicroZig = struct {
+    creating_builder: *std.Build,
     dep: *std.Build.Dependency,
 
     pub fn get_tool_exe(mz: *MicroZig, tool: Tool) *std.Build.Step.Compile {
-        // HACK: Return a distinct value
-        const exe = mz.dep.builder.addExecutable(.{
-            .name = @tagName(tool),
-            .target = mz.dep.builder.graph.host,
-        });
-        return exe;
+        return mz.dep.artifact(@tagName(tool));
     }
 
     pub fn add_embedded_executable(mz: *MicroZig, options: EmbeddedExecutable.CreateOptions) *EmbeddedExecutable {
-        const exe = mz.dep.builder.allocator.create(EmbeddedExecutable) catch @panic("out of memory");
+        const target = mz.resolve_target(null, options.target);
 
+        const core_mod = mz.dep.builder.createModule(.{
+            .root_source_file = mz.dep.builder.path("core/microzig.zig"),
+        });
+
+        core_mod.addImport("microzig-target", target.module);
+
+        const exe: *EmbeddedExecutable = mz.dep.builder.allocator.create(EmbeddedExecutable) catch @panic("out of memory");
         exe.* = .{
-            //
+            .artifact = mz.creating_builder.addExecutable(.{
+                .name = options.name,
+                .target = target.chip.cpu.target,
+                .optimize = options.optimize,
+                .root_source_file = options.root_source_file,
+            }),
         };
 
-        _ = options;
+        exe.artifact.root_module.addImport("microzig", core_mod);
 
         return exe;
     }
 
     pub fn install_artifact(mz: *MicroZig, exe: *EmbeddedExecutable) void {
-        //
+        mz.creating_builder.installArtifact(exe.artifact);
+    }
+
+    fn resolve_target(mz: *MicroZig, port_hint: ?*internals.Port, alias: *const internals.TargetAlias) *const internals.Target {
         _ = mz;
-        _ = exe;
+        _ = alias;
+        _ = port_hint;
+        @panic("not done");
     }
 };
 
 pub const EmbeddedExecutable = struct {
     pub const CreateOptions = struct {
-        target: internals.TargetAlias,
+        name: []const u8,
+        target: *const internals.TargetAlias,
         optimize: std.builtin.OptimizeMode,
         root_source_file: std.Build.LazyPath,
     };
+
+    artifact: *std.Build.Step.Compile,
 };
 
 pub const Tool = enum {

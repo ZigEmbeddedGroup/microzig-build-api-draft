@@ -13,6 +13,7 @@ pub const Port = struct {
     name: []const u8,
 
     targets: std.StringArrayHashMap(*Target),
+    registered_targets: std.AutoArrayHashMap(*const TargetAlias, *Target),
 
     pub fn from_dependency(dep: *std.Build.Dependency) *Port {
         return port_registry.ports.get(dep.builder) orelse std.debug.panic(
@@ -40,84 +41,144 @@ pub const Port = struct {
             .b = b,
             .name = b.dupe(name),
             .targets = std.StringArrayHashMap(*Target).init(b.allocator),
+            .registered_targets = std.AutoArrayHashMap(*const TargetAlias, *Target).init(b.allocator),
         };
         gop.value_ptr.* = port;
         return port;
     }
 
+    pub const AddCpuOptions = struct {
+        root_source_file: std.Build.LazyPath,
+        target: std.Target.Query,
+        imports: []const std.Build.Module.Import = &.{},
+    };
+    pub fn create_cpu(port: *Port, name: []const u8, options: AddCpuOptions) *const Cpu {
+        const cpu = port.b.allocator.create(Cpu) catch @panic("out of memory");
+        cpu.* = Cpu{
+            .name = port.b.dupe(name),
+            .target = port.b.resolveTargetQuery(options.target),
+            .module = port.b.createModule(.{
+                .root_source_file = options.root_source_file,
+                .imports = options.imports,
+            }),
+        };
+        return cpu;
+    }
+
+    pub const AddChipOptions = struct {
+        cpu: *const Cpu,
+        root_source_file: std.Build.LazyPath,
+        imports: []const std.Build.Module.Import = &.{},
+    };
+    pub fn create_chip(port: *Port, name: []const u8, options: AddChipOptions) *const Chip {
+        const chip = port.b.allocator.create(Chip) catch @panic("out of memory");
+        chip.* = Chip{
+            .name = port.b.dupe(name),
+            .cpu = options.cpu,
+            .module = port.b.createModule(.{
+                .root_source_file = options.root_source_file,
+                .imports = options.imports,
+            }),
+        };
+
+        return chip;
+    }
+
     /// Adds a new target to port.
-    pub fn add_target(port: *Port, alias: *TargetAlias, options: TargetCreateOptions) *Target {
-        if (alias.* != .pointer) {
-            std.debug.panic("`Port.add_target` must be called with a `.pointer` alias!", .{});
+    pub fn add_target(port: *Port, alias: *const TargetAlias, options: TargetCreateOptions) *Target {
+        const target_kind: Target.Kind, const target_name: []const u8 = switch (alias.*) {
+            .name => std.debug.panic("`Port.add_target` must be called with a `.registered_chip` or `.registered_board` alias!", .{}),
+            .registered_board => |name| .{ .board, name },
+            .registered_chip => |name| .{ .chip, name },
+        };
+
+        const alias_gop = port.registered_targets.getOrPut(alias) catch @panic("out of memory");
+        if (alias_gop.found_existing) {
+            std.debug.panic("This alias is already associated with another target called '{}'", .{
+                std.zig.fmtEscapes(alias_gop.value_ptr.*.name),
+            });
         }
 
-        const gop = port.targets.getOrPut(alias.pointer.decl_name) catch @panic("out of memory");
-        if (gop.found_existing) {
+        const name_gop = port.targets.getOrPut(target_name) catch @panic("out of memory");
+        if (name_gop.found_existing) {
             std.debug.panic("Another target called '{}' does already exist in port '{}'", .{
-                std.zig.fmtEscapes(alias.pointer.decl_name),
+                std.zig.fmtEscapes(target_name),
                 std.zig.fmtEscapes(port.name),
             });
         }
 
         const target = port.b.allocator.create(Target) catch @panic("out of memory");
         target.* = Target{
-            .kind = alias.pointer.decl_kind,
-            .name = port.b.dupe(alias.pointer.decl_name),
+            .kind = target_kind,
+            .name = port.b.dupe(target_name),
+            .chip = options.chip,
+            .hal = options.hal,
+            .board = options.board,
+            .module = port.b.createModule(.{
+                .root_source_file = port.b.path("src/target.zig"),
+                .imports = &.{
+                    .{ .name = "microzig-chip", .module = options.chip.module },
+                },
+            }),
         };
 
-        alias.pointer.target = target;
-
-        _ = options;
-
-        gop.value_ptr.* = target;
+        name_gop.value_ptr.* = target;
+        alias_gop.value_ptr.* = target;
         return target;
     }
 };
 
-pub const TargetCreateOptions = struct {
-    //
+pub const Cpu = struct {
+    name: []const u8,
+    module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
 };
 
-/// Creates a new alias for chip.
-pub fn create_chip(comptime name: []const u8) TargetAlias {
-    return create_name(.chip, name);
-}
-
-/// Creates a new alias for board.
-pub fn create_board(comptime name: []const u8) TargetAlias {
-    return create_name(.board, name);
-}
-
-/// Creates a new target alias.
-pub fn create_name(comptime target_kind: Target.Kind, comptime name: []const u8) TargetAlias {
-    return .{
-        .pointer = .{
-            .decl_kind = target_kind,
-            .decl_name = name,
-            .target = null,
-        },
-    };
-}
-
-/// A target alias the user references from their build script.
-pub const TargetAlias = union(enum) {
+pub const Chip = struct {
     name: []const u8,
-    pointer: struct {
-        decl_kind: Target.Kind,
-        decl_name: []const u8,
-        target: ?*Target,
-    },
+    module: *std.Build.Module,
+    cpu: *const Cpu,
+};
+
+pub const TargetCreateOptions = struct {
+    chip: *const Chip,
+    hal: ?*std.Build.Module = null,
+    board: ?*std.Build.Module = null,
 };
 
 /// Actual MicroZig target you can compile for.
 pub const Target = struct {
     kind: Kind,
+
     name: []const u8,
+
+    chip: *const Chip,
+    hal: ?*std.Build.Module,
+    board: ?*std.Build.Module,
+
+    module: *std.Build.Module,
 
     pub const Kind = enum {
         board,
         chip,
     };
+};
+/// A target alias the user references from their build script.
+pub const TargetAlias = union(enum) {
+    // use to refer to a target by name:
+    name: []const u8,
+
+    // internal use, must be registered with the port:
+    registered_board: []const u8,
+    registered_chip: []const u8,
+
+    pub fn board(name: []const u8) TargetAlias {
+        return .{ .registered_board = name };
+    }
+
+    pub fn chip(name: []const u8) TargetAlias {
+        return .{ .registered_chip = name };
+    }
 };
 
 pub fn build(b: *std.Build) void {
